@@ -1,156 +1,446 @@
 # PII Redaction Tool
 
-An industrial-grade, privacy-preserving Microsoft Word (`.docx`) document redaction and evaluation engine. Built to process complex Indian corporate prospectuses, detect 9 categories of Personally Identifiable Information (PII), deterministically pseudonymize sensitive entities with fake data, apply run-level XML text substitution while preserving styles and tables, and perform quantitative evaluation against a provisional automated annotation benchmark (no candidates were independently human-reviewed).
+A Microsoft Word (`.docx`) PII detection and pseudonymization engine. Accepts a Word document as input, detects supported PII categories using a hybrid regex + NLP pipeline, replaces each detected entity with a deterministic synthetic substitute, and writes a redacted DOCX without corrupting document structure or formatting.
+
+> **⚠️ Provisional Evaluation Notice**: All evaluation metrics in this README are computed against a **provisional automated annotation benchmark** (not independently human-reviewed ground truth). See [Section 11](#11-evaluation-methodology) and [`evaluation/review_workflow.md`](evaluation/review_workflow.md) for full provenance details.
 
 ---
 
-## Problem Statement
+## Table of Contents
 
-Financial prospectuses (e.g., Red Herring Prospectuses filed with regulatory bodies) contain extensive sensitive data—including executive personal names, contact numbers, email addresses, registered company offices, and institutional banking details—alongside public financial metrics, share allocations, and legal clauses.
-
-Traditional manual redaction or basic search-and-replace tools suffer from three major vulnerabilities:
-1. **Document Corruption**: Flattening open XML text strips paragraph formatting, table styling, and run properties.
-2. **False Positives**: Naive rules misclassify financial figures, page numbers, incorporation dates, and tax codes as PII.
-3. **Inconsistent Pseudonymization**: Replacing recurring names with random fake data breaks document co-reference and legal readability.
-
-The **PII Redaction Tool** solves these challenges by combining a hybrid NLP/Regex detection pipeline, run-level DOCX substitution, deterministic pseudonym mapping, and token-level evaluation metrics.
-
----
-
-## Input Document
-
-* **Primary Input Scope**: Microsoft Word (`.docx`) financial prospectus documents (e.g. `Red Herring Prospectus.docx`).
-* **Document Characteristics** (Benchmark Target):
-  * **Top-Level Paragraphs**: 1,006 `w:p` elements
-  * **Table Cell Paragraphs**: 4,199 `w:p` elements across 76 tables (3,722 cells)
-  * **Total Extracted Characters**: 441,075 characters (~69,746 tokens)
-  * **Active Headers**: 73 header XML files containing text
-
-> **Note**: The original source prospectus document (`input/Red Herring Prospectus.docx`) and raw evaluation annotation datasets (`evaluation/ground_truth.json`, `evaluation/ground_truth_verified.json`, etc.) are intentionally excluded from the public repository to prevent exposing raw PII and sensitive candidate strings. Users can process any target `.docx` file by placing it in `input/` or specifying `--input path/to/document.docx`.
+1. [Overview](#1-overview)
+2. [Supported PII Types](#2-supported-pii-types)
+3. [How It Works](#3-how-it-works)
+4. [Project Structure](#4-project-structure)
+5. [Requirements](#5-requirements)
+6. [Installation](#6-installation)
+7. [Running the Tool](#7-running-the-tool)
+8. [Example Workflow](#8-example-workflow)
+9. [Verifying the Output](#9-verifying-the-output)
+10. [Running Tests](#10-running-tests)
+11. [Evaluation Methodology](#11-evaluation-methodology)
+12. [Redaction Validation](#12-redaction-validation)
+13. [Ground Truth Provenance](#13-ground-truth-provenance)
+14. [Limitations](#14-limitations)
+15. [Privacy and Security](#15-privacy-and-security)
+16. [Troubleshooting](#16-troubleshooting)
 
 ---
 
-## Supported PII Types
+## 1. Overview
 
-The pipeline natively supports 9 PII categories:
+The **PII Redaction Tool** is a local Python pipeline designed to:
 
-| PII Category | Description & Inclusion Scope | Format / Logic |
+1. **Accept** any Microsoft Word `.docx` file as input.
+2. **Parse** the full document OpenXML structure — body paragraphs, table cells, running headers, and footers — while tracking exact source locations for each extracted text chunk.
+3. **Detect** candidate PII entities across 9 supported categories using a hybrid rule-based + statistical NLP approach.
+4. **Pseudonymize** each detected entity by mapping it to a deterministic synthetic replacement (e.g., real name → `"John Doe"`, real email → `"jane.doe@example.com"`).
+5. **Redact** the original DOCX by applying run-level XML text substitution that preserves fonts, table borders, paragraph alignment, and other formatting.
+6. **Write** the redacted DOCX to a specified output path.
+7. **Validate** that selected candidate PII occurrences were successfully replaced.
+
+The tool operates fully **offline** — no cloud APIs, no internet connections, and no external services are used at runtime.
+
+**What it does not claim:**
+- It does not guarantee detection of every possible PII occurrence in an arbitrary document.
+- It has not been evaluated against independently human-reviewed ground truth annotations.
+- Final human-validated precision, recall, and F1 metrics are not yet available.
+
+---
+
+## 2. Supported PII Types
+
+The pipeline natively supports detection and pseudonymization of 9 PII categories:
+
+| PII Category | Detected Entities | Detection Method |
 | :--- | :--- | :--- |
-| **`PERSON`** | Names of natural persons (directors, promoters, officers) | Local spaCy NER + Title/Honorific rules |
+| **`PERSON`** | Names of natural persons (directors, promoters, officers) | Local spaCy NER + Title/Honorific prefix rules |
 | **`EMAIL`** | Personal and corporate contact email addresses | Compiled regex (`local@domain.ext`) |
-| **`PHONE`** | Indian mobile, landline, and formatted phone numbers | Compiled regex (`+91`, landline STD codes) |
-| **`ORGANIZATION`** | Private corporate entity names (issuers, auditors, banks) | Local spaCy NER + Legal suffix matching |
-| **`ADDRESS`** | Multi-component physical premises & mailing addresses | Multi-signal premises/locality/PIN scoring |
-| **`SSN`** | US Social Security Numbers (`NNN-NN-NNNN`) | Area/Group/Serial structured regex |
-| **`CREDIT_CARD`** | Financial credit/debit card numbers | 13–19 digit candidate extraction + Luhn checksum |
-| **`DOB`** | Dates of birth of natural persons | Contextual prefix triggers (`DOB:`, `Born on`) |
-| **`IP_ADDRESS`** | IPv4 network addresses (`192.168.1.1`) | Negative lookaround bounds + `ipaddress` validation |
+| **`PHONE`** | Indian mobile (+91), landline, and formatted phone numbers | Compiled regex + STD area code triggers |
+| **`ORGANIZATION`** | Private corporate entity names (issuers, auditors, banks, etc.) | Local spaCy NER + Legal suffix matching |
+| **`ADDRESS`** | Multi-component physical premises and mailing addresses | Multi-signal premises, locality, and PIN-code scoring |
+| **`SSN`** | US Social Security Numbers (`NNN-NN-NNNN`) | Area/Group/Serial structured regex with range validation |
+| **`CREDIT_CARD`** | Financial credit/debit card numbers (13–19 digits) | Digit extraction + Luhn checksum validation |
+| **`DOB`** | Dates of birth of natural persons | Contextual prefix triggers (`DOB:`, `Date of Birth:`, `Born on`) |
+| **`IP_ADDRESS`** | IPv4 network addresses (`192.168.1.1`) | Negative lookaround bounds + Python `ipaddress` validation |
 
 ---
 
-## Architecture
+## 3. How It Works
 
-The system enforces a strict 7-stage sequential architecture:
+The pipeline is a strict 7-stage sequential architecture:
 
-```mermaid
-flowchart TD
-    A["DOCX Extraction\n(DOCXExtractor)"] --> B["Detection\n(8 Multi-Category Detectors)"]
-    B --> C["Detection Aggregation\n(Deduplication)"]
-    C --> D["Overlap Resolution\n(Priority & Length Selection)"]
-    D --> E["Pseudonymization\n(Deterministic Faker Seeding)"]
-    E --> F["DOCX Redaction\n(Run-Level Text Substitution)"]
-    F --> G["Evaluation Engine\n(Entity & Token Metrics)"]
+```
+Input DOCX
+    │
+    ▼
+[Stage 1] DOCX Extraction (DOCXExtractor)
+    │  Parses body paragraphs, table cells, headers, and footers.
+    │  Each chunk is tagged with its exact SourceLocation coordinate
+    │  (source_type, table_idx, row_idx, cell_idx, paragraph_idx, header_idx, footer_idx).
+    │
+    ▼
+[Stage 2] PII Detection (8 specialized detectors)
+    │  Runs regex, contextual rules, and local spaCy NER in parallel
+    │  over every extracted text chunk.
+    │
+    ▼
+[Stage 3] Aggregation and Deduplication
+    │  Normalizes detection metadata and removes exact duplicate spans.
+    │
+    ▼
+[Stage 4] Overlap Resolution
+    │  Resolves overlapping spans using a priority hierarchy:
+    │  EMAIL/PHONE/SSN/CREDIT_CARD/IP_ADDRESS > DOB > ADDRESS > ORGANIZATION > PERSON
+    │  Longer spans are preferred over shorter sub-spans at equal priority.
+    │
+    ▼
+[Stage 5] Pseudonymization (Pseudonymizer)
+    │  Generates deterministic synthetic replacements using MD5 hash seeds
+    │  keyed on (entity_type, original_text). Recurring names always receive
+    │  the same replacement to preserve document co-reference.
+    │
+    ▼
+[Stage 6] DOCX Redaction (DOCXRedactor)
+    │  Applies run-level (<w:r>) XML text substitution across paragraphs
+    │  and table cells, preserving font styles, cell borders, and alignments.
+    │
+    ▼
+Output Redacted DOCX
 ```
 
-1. **DOCX Extraction**: Parses body paragraphs, table cells, headers, and footers while preserving exact XML element coordinates (`SourceLocation`).
-2. **Detection**: Runs 8 specialized detection components in parallel over extracted text chunks.
-3. **Detection Aggregation**: Normalizes detection metadata and removes exact duplicate spans.
-4. **Overlap Resolution**: Resolves overlapping detection spans using a strict priority hierarchy (`EMAIL/PHONE/SSN/CC/IP > DOB > ADDRESS > ORGANIZATION > PERSON`) and span length.
-5. **Pseudonymization**: Generates deterministic synthetic replacements using MD5 hash seeds per `(entity_type, text)` pair.
-6. **DOCX Redaction**: Performs precise run-level XML substitution (`<w:r>`) without corrupting document styles, tables, or layout.
-7. **Evaluation**: Compares predictions against a provisional automated annotation benchmark to report entity-level Micro-F1 and token-level accuracy. No candidates were independently human-reviewed; all metrics are provisional.
+**Pseudonymization examples:**
+- `PERSON` → `"John Doe"` (deterministic per-name seed)
+- `EMAIL` → `"jane.doe@example.com"` (RFC-safe documentation domain)
+- `PHONE` → `"+91 9900000000"` (synthetic Indian mobile format)
+- `IP_ADDRESS` → `"192.0.2.1"` (RFC 5737 documentation range)
+- `SSN` → `"000-00-0001"` (synthetic test SSN pattern)
 
 ---
 
-## Detection Approach
+## 4. Project Structure
 
-The system employs a multi-tiered hybrid detection methodology:
-* **Compiled Regex**: Used for structured formats (`EMAIL`, `PHONE`, `SSN`, `IP_ADDRESS`, `CREDIT_CARD`) with negative lookaround assertions (`(?<![\d.])`) to prevent partial matches.
-* **Local spaCy NER**: Loads `en_core_web_sm` locally (zero external network/API calls) for `PERSON` and `ORGANIZATION` entity extraction.
-* **Contextual Trigger Rules**: `DOBDetector` requires explicit birth context triggers (`"Date of Birth:"`, `"DOB:"`, `"Born on"`) to prevent classifying corporate incorporation or filing dates as DOB.
-* **Mathematical & Algorithmic Validation**:
-  * `CreditCardDetector` validates 16-digit candidates against the Luhn checksum algorithm (`_validate_luhn`).
-  * `IPDetector` validates candidate strings using Python's native `ipaddress.ip_address()` module.
-  * `SSNDetector` validates area codes (`000`, `666`, `900-999` rejected) and group/serial numbers.
+```text
+PII-Redaction-Tool/
+├── .gitignore                       # Excludes sensitive source files and local artifacts
+├── README.md                        # This file
+├── pytest.ini                       # Pytest configuration (testpaths = tests)
+├── requirements.txt                 # Python dependencies including pinned spaCy model
+│
+├── docs/                            # Technical audit and architecture documentation
+│   ├── CAREEDGE_LEAK_ROOT_CAUSE.md  # Post-mortem & fix for repeated-entity propagation bug
+│   ├── CORRECTNESS_AUDIT.md         # Quality control audit report
+│   ├── GROUND_TRUTH_PROVENANCE.md   # Annotation provenance and review method disclosure
+│   ├── GROUND_TRUTH_GUIDE.md        # Annotation policy and acceptance criteria
+│   └── ...                          # Additional audit and publication records
+│
+├── evaluation/
+│   ├── evaluation_report.md         # Full evaluation metrics report (Sections 12 & 13)
+│   ├── final_redaction_validation.json  # JSON structured residual PII validation results
+│   ├── final_redaction_validation.md    # Residual PII validation narrative report
+│   ├── review_annotations.py        # Ground truth candidate review utility
+│   └── review_workflow.md           # Annotation workflow documentation
+│
+├── output/
+│   └── redacted_prospectus.docx     # Pre-generated redacted output (synthetic data only)
+│
+├── scripts/
+│   ├── extract_doc_stats.py         # OpenXML document statistics extraction utility
+│   └── residual_pii_checker.py      # Post-redaction residual PII validation script
+│
+├── src/
+│   ├── config.py                    # Project directory configuration (Settings dataclass)
+│   ├── detection_pipeline.py        # Detection pipeline orchestration and overlap resolution
+│   ├── main.py                      # CLI entry point (use: python -m src.main)
+│   ├── models.py                    # PIIEntity, TextChunk, SourceLocation models
+│   ├── detectors/                   # 8 specialized PII detectors
+│   │   ├── address_detector.py
+│   │   ├── credit_card_detector.py
+│   │   ├── dob_detector.py
+│   │   ├── email_detector.py
+│   │   ├── ip_detector.py
+│   │   ├── ner_detector.py          # spaCy NER for PERSON and ORGANIZATION
+│   │   ├── phone_detector.py
+│   │   └── ssn_detector.py
+│   ├── evaluation/                  # Evaluation engine and metrics computation
+│   ├── extractors/                  # DOCX paragraph and table extractor (DOCXExtractor)
+│   ├── redaction/                   # Pseudonymizer and DOCXRedactor
+│   └── validation/                  # Post-redaction validation utilities
+│
+└── tests/                           # 18 test modules — 83 unit and regression tests
+```
 
----
-
-## Why a Hybrid Approach?
-
-Regex alone is fundamentally insufficient for industrial PII redaction:
-* **Names (`PERSON`)**: Person names lack uniform patterns. RegEx cannot distinguish between `"Rashi Patil"` (Person) and `"Red Herring"` (Title) without NLP context.
-* **Organizations (`ORGANIZATION`)**: Corporate entities appear in varied contexts (*"KSH International Limited"*, *"ICICI Securities"*). RegEx rules generate thousands of false positives on capitalized document headers.
-* **Addresses (`ADDRESS`)**: Physical addresses span multiple lines and contain mixed combinations of premises, locality, road names, and PIN codes.
-* **Dates of Birth (`DOB`)**: RegEx date patterns match every date in a document (`"December 10, 2025"`, `"July 30, 1979"`). Only hybrid contextual analysis can filter out filing, incorporation, and agreement dates.
-
----
-
-## DOCX Handling
-
-To prevent document corruption during redaction:
-* **Paragraphs & Tables**: Iterates directly over `doc.paragraphs` and `table.cell.paragraphs`, preserving paragraph alignments, line spacing, and table cell borders.
-* **Run-Level Text Substitution**: DOCX stores formatted text inside runs (`<w:r>`). When a PII entity span crosses run boundaries:
-  * *Single-Run Match*: Replaces the entity substring directly within `run.text`, preserving bold, italic, font size, and color attributes.
-  * *Multi-Run Match*: Replaces the prefix in the first run, clears intermediate runs (`run.text = ""`), and retains the remaining text in the trailing run.
-
----
-
-## Pseudonymization
-
-Pseudonymization replaces sensitive PII with synthetic alternatives deterministically:
-* **MD5 Seed Generation**: Computes an MD5 integer seed from `(entity_type, original_text.strip().lower())`.
-* **Consistent Replacement**: If `"Rashi Patil"` appears 20 times in a document, all 20 occurrences are replaced by the exact same synthetic name (e.g. `"John Doe"`).
-* **Domain Security Standards**:
-  * `EMAIL`: Uses reserved documentation domain (`@example.com`).
-  * `PHONE`: Uses synthetic Indian mobile format (`+91 99########`).
-  * `IP_ADDRESS`: Uses RFC 5737 documentation test range (`192.0.2.x`).
-  * `CREDIT_CARD`: Uses recognized test card pattern (`4000 xxxx xxxx xxxx`).
-  * `SSN`: Uses synthetic test SSN pattern (`000-XX-XXXX`).
-
----
-
-## Evaluation Methodology
-
-Evaluation compares model predictions against ground truth annotations (see [`evaluation/review_workflow.md`](evaluation/review_workflow.md)):
-
-> **⚠️ PROVISIONAL EVALUATION**: The benchmark ground truth contains **provisional candidate annotations** generated by automated rules, NOT genuine human-reviewed annotations. Raw annotation datasets are excluded from the public repository to protect source data confidentiality. See [`evaluation/review_workflow.md`](evaluation/review_workflow.md) and [`docs/GROUND_TRUTH_PROVENANCE.md`](docs/GROUND_TRUTH_PROVENANCE.md) for provenance details.
-
-### 1. Entity-Level Matching (Precision, Recall, F1)
-A prediction is a **True Positive (TP)** if and only if:
-1. Predicted `entity_type` matches ground-truth `entity_type`.
-2. The unique DOCX `source_location` (`source_type`, `table_index`, `row_index`, `cell_index`, `paragraph_index`, `header_index`, `footer_index`) matches.
-3. Normalized character span `(start, end)` matches the ground-truth span.
-
-$$\text{Precision} = \frac{\text{TP}}{\text{TP} + \text{FP}}, \quad \text{Recall} = \frac{\text{TP}}{\text{TP} + \text{FN}}, \quad \text{F1} = 2 \times \frac{\text{Precision} \times \text{Recall}}{\text{Precision} + \text{Recall}}$$
-
-### 2. Token-Level Classification Accuracy
-To calculate accuracy meaningfully without inventing arbitrary True Negative entity counts, the engine tokenizes document text into whitespace-delimited tokens (`69,746` total tokens):
-* **Positive Class**: Tokens belonging to ground-truth PII entity spans.
-* **Negative Class**: Tokens outside ground-truth PII entity spans.
-
-$$\text{Accuracy}_{\text{token}} = \frac{\text{TP}_{\text{tokens}} + \text{TN}_{\text{tokens}}}{\text{Total Document Tokens}}$$
+> **Note on Excluded Files**: The following files are intentionally **NOT included** in this public GitHub repository to protect sensitive and private data:
+> - `input/Red Herring Prospectus.docx` — the original source document containing real PII.
+> - `evaluation/ground_truth.json` and `evaluation/ground_truth_verified.json` — raw annotation datasets.
+> - `evaluation/candidate_annotations.json`, `evaluation/candidate_annotations.md`, `evaluation/review_summary.md` — intermediate annotation working files.
+>
+> To use the tool, supply your own `.docx` file using `--input path/to/your_document.docx`.
 
 ---
 
-## Results
+## 5. Requirements
 
-> **⚠️ PROVISIONAL EVALUATION NOTICE**: The metrics below are computed against **provisional candidate annotations** (not human-reviewed ground truth). The ground-truth benchmark was generated by automated candidate detection rules and accepted without line-by-line human review. All figures must be treated as **PROVISIONAL** until a qualified human auditor reviews every annotation. See [`evaluation/review_workflow.md`](evaluation/review_workflow.md) and [`docs/GROUND_TRUTH_GUIDE.md`](docs/GROUND_TRUTH_GUIDE.md) for the full lifecycle and integrity rules.
+| Requirement | Details |
+| :--- | :--- |
+| **Python** | **≥ 3.10** (required for `X \| Y` union type annotation syntax in source code) |
+| **pip** | Latest version recommended (`python -m pip install --upgrade pip`) |
+| **Virtual environment** | Strongly recommended (`.venv`) |
+| **Internet** | Required only during `pip install -r requirements.txt` to download dependencies |
+| **Runtime internet** | **None** — the application operates fully offline after installation |
+| **Environment variables** | **None** — no `.env` file, API keys, or external credentials required |
 
-### Provisional Annotation-Agreement Metrics (Verified Subset)
+### Python Dependencies (`requirements.txt`)
 
-> **⚠️ These metrics are provisional annotation-agreement metrics measured against the 63-candidate automated-reviewed subset. They are NOT independently human-validated model performance metrics. Zero candidates were reviewed by a human. Do NOT interpret these as final model precision, recall, or F1.**
+```
+python-docx>=1.1.0
+spacy>=3.7.0
+https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.7.1/en_core_web_sm-3.7.1-py3-none-any.whl
+faker>=24.0.0
+pytest>=8.0.0
+pydantic>=2.6.0
+```
 
-Computed from the verified 63-candidate automated-reviewed subset (15 accepted provisional entities, 48 rejected candidates):
+> **spaCy Model Note**: The `en_core_web_sm-3.7.1` spaCy language model wheel is included directly in `requirements.txt`. Running `pip install -r requirements.txt` installs both spaCy and the model in a single step. **No separate `python -m spacy download` command is needed.**
+
+---
+
+## 6. Installation
+
+### Windows (PowerShell)
+
+```powershell
+git clone https://github.com/Perfectionist0001/PII-Redaction-Tool.git
+cd PII-Redaction-Tool
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+> **PowerShell Execution Policy**: If `.\.venv\Scripts\Activate.ps1` is blocked, run once:
+> ```powershell
+> Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+> ```
+
+### Linux / macOS
+
+```bash
+git clone https://github.com/Perfectionist0001/PII-Redaction-Tool.git
+cd PII-Redaction-Tool
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+After installation, verify the environment:
+
+```bash
+python -m src.main --help
+```
+
+---
+
+## 7. Running the Tool
+
+> **Critical**: Always use the module syntax `python -m src.main` from the project root directory.  
+> Running `python src/main.py` directly **will fail** with an `ImportError` because the application uses package-relative imports that require the `src` package to be on the Python path, which is guaranteed only by module invocation.
+
+### CLI Syntax
+
+```
+python -m src.main [--input INPUT] [--output OUTPUT] [--evaluate] [--ground-truth PATH] [--report PATH] [--verbose]
+```
+
+### All Supported Arguments
+
+| Argument | Short | Required | Default | Description |
+| :--- | :--- | :--- | :--- | :--- |
+| `--input` | `-i` | **No** (but practically required — see below) | `input/Red Herring Prospectus.docx` | Path to the input `.docx` document |
+| `--output` | `-o` | No | `output/redacted_prospectus.docx` | Output path for the redacted DOCX |
+| `--evaluate` | — | No | `False` | Run evaluation against ground truth after redaction |
+| `--ground-truth` | — | No | `evaluation/ground_truth.json` | Path to ground truth JSON for evaluation |
+| `--report` | — | No | `evaluation/evaluation_report.md` | Path to write the evaluation report |
+| `--verbose` | `-v` | No | `False` | Enable detailed diagnostic logging |
+| `--help` | `-h` | No | — | Show help and exit |
+
+> **Important**: The default `--input` path (`input/Red Herring Prospectus.docx`) is **excluded from the public repository**. Always supply `--input` explicitly:
+> ```bash
+> python -m src.main --input path/to/your_document.docx
+> ```
+
+> **Output directory**: The output directory is **created automatically** by the application if it does not exist. You do not need to pre-create `output/` or any other output directory.
+
+### Basic Redaction
+
+```bash
+python -m src.main --input input/sample.docx --output output/redacted.docx
+```
+
+### Verbose Redaction
+
+```bash
+python -m src.main --input input/sample.docx --output output/redacted.docx --verbose
+```
+
+### Redaction with Evaluation (Requires a Ground Truth JSON)
+
+```bash
+python -m src.main \
+  --input input/sample.docx \
+  --output output/redacted.docx \
+  --evaluate \
+  --ground-truth evaluation/ground_truth.json \
+  --report evaluation/evaluation_report.md
+```
+
+**Windows PowerShell** (single line — no backslash continuation):
+```powershell
+python -m src.main --input input/sample.docx --output output/redacted.docx --evaluate --ground-truth evaluation/ground_truth.json --report evaluation/evaluation_report.md
+```
+
+---
+
+## 8. Example Workflow
+
+The following step-by-step workflow is recommended for new users testing the tool with a synthetic document:
+
+**Step 1 — Clone and install:**
+```bash
+git clone https://github.com/Perfectionist0001/PII-Redaction-Tool.git
+cd PII-Redaction-Tool
+python -m venv .venv && source .venv/bin/activate   # or Activate.ps1 on Windows
+pip install -r requirements.txt
+```
+
+**Step 2 — Prepare a test DOCX** containing synthetic (fake) PII, such as:
+- A paragraph with a fictional name and email address.
+- A table row with a fake phone number.
+- Use a tool like Microsoft Word, LibreOffice, or python-docx to create `input/sample.docx`.
+
+> **Important**: Use only synthetic/fake PII for testing. Do not commit real documents with sensitive personal data to public repositories.
+
+**Step 3 — Run the redaction pipeline:**
+```bash
+python -m src.main --input input/sample.docx --output output/redacted.docx --verbose
+```
+
+**Step 4 — Inspect the output:**
+Open `output/redacted.docx` in Microsoft Word or LibreOffice.
+
+**Step 5 — Compare:**
+Side-by-side compare `input/sample.docx` and `output/redacted.docx`. Detected PII values should be replaced with synthetic alternatives. Surrounding non-PII text, table structure, and paragraph formatting should remain intact.
+
+**Step 6 — Run tests:**
+```bash
+pytest -q
+```
+
+---
+
+## 9. Verifying the Output
+
+### Check Output File Exists
+
+**Windows PowerShell:**
+```powershell
+Get-Item output/redacted.docx
+```
+
+**Linux / macOS:**
+```bash
+ls -lh output/redacted.docx
+```
+
+### Check Output Document Is Readable
+
+```python
+from docx import Document
+doc = Document("output/redacted.docx")
+for p in doc.paragraphs[:20]:
+    print(p.text)
+```
+
+### What a Successful Redaction Looks Like
+
+The tool prints a summary on completion:
+
+```
+Status               : SUCCESS
+Total Detections     : 42
+Total Replaced Spans : 38
+
+Replaced Entities by Category:
+  - PERSON              : 12
+  - EMAIL               : 3
+  - ORGANIZATION        : 20
+  - PHONE               : 3
+```
+
+### Detection vs. Replacement Validation
+
+Two distinct concepts apply here:
+
+| Concept | What It Measures | Limitation |
+| :--- | :--- | :--- |
+| **Detection evaluation** | Whether the pipeline correctly identified PII entities relative to a ground-truth benchmark | Requires a validated ground-truth annotation set |
+| **Redaction replacement validation** | Whether the entities that were detected and selected for replacement were actually overwritten in the output DOCX | Does **not** prove that all PII in the document was detected |
+
+Confirming that a replacement occurred in the output DOCX **does not imply complete detector recall**. There may be PII in the document that was not detected, depending on document structure, entity format, and model limitations.
+
+---
+
+## 10. Running Tests
+
+Run the full automated test suite from the project root:
+
+```bash
+pytest -q
+```
+
+The `pytest.ini` configuration sets `testpaths = tests`. All 18 test modules in `tests/` are discovered automatically.
+
+**Verified test result:**
+```
+83 passed, 0 failed, 0 skipped
+```
+
+Run specific regression tests:
+
+```bash
+pytest tests/test_regressions.py tests/test_regression_correctness.py -v
+```
+
+Run a single test module:
+
+```bash
+pytest tests/test_email_detector.py -v
+```
+
+---
+
+## 11. Evaluation Methodology
+
+> **⚠️ Critical Framing**: All evaluation metrics in this section are **provisional annotation-agreement metrics** measured against an automated annotation subset. They are **NOT** independently human-validated model performance metrics.
+
+### How Evaluation Works
+
+1. **Candidate Generation**: An automated pipeline scans the document and generates candidate PII annotation candidates (`3,507` total for the benchmark prospectus).
+2. **Provisional Review**: A policy-based automated review process accepts or rejects candidates based on configurable rules.
+3. **Ground Truth**: Accepted provisional annotations become the evaluation ground truth.
+4. **Source-Location-Aware Matching**: A prediction is a **True Positive (TP)** only if it matches the ground-truth annotation in all three dimensions:
+   - Entity type (e.g. `PERSON`, `EMAIL`)
+   - Spatial coordinate key (source type, table index, row index, cell index, paragraph index)
+   - Character span (start offset, end offset)
+
+   Spatial coordinates are required because identical text appears in multiple table cells throughout the document; without them, predictions would falsely match across locations.
+
+5. **Known FP / FN / Unassessed**: Predictions in unreviewed document regions (3,444 unreviewed candidates) are tracked as "unassessed" and are **not** counted as false positives.
+
+### Provisional Annotation-Agreement Metrics (Verified Subset Only)
+
+> **⚠️ These metrics measure agreement with the current automated provisional annotation subset (63 candidates). They are NOT independently human-validated model performance metrics. Zero candidates were reviewed by a human auditor.**
 
 | Metric | Provisional Value | Scope |
 | :--- | :---: | :--- |
@@ -158,189 +448,179 @@ Computed from the verified 63-candidate automated-reviewed subset (15 accepted p
 | **Recall** | **60.00%** | 63 automated-reviewed candidates only |
 | **F1 Score** | **25.71%** | 63 automated-reviewed candidates only |
 | **Accuracy (entity-level)** | **N/A** | Insufficient validated negative population |
-| **Final / Human-Validated Precision** | **N/A** | No human review performed |
-| **Final / Human-Validated Recall** | **N/A** | No human review performed |
-| **Final / Human-Validated F1** | **N/A** | No human review performed |
 
-Formulae:  
-`Precision = TP / (TP + FP) = 9 / 55 = 16.36%`  
-`Recall    = TP / (TP + FN) = 9 / 15 = 60.00%`  
-`F1        = 2TP / (2TP + FP + FN) = 18 / 70 = 25.71%`
+Formulae:
+```
+TP = 9,  FP = 46,  FN = 6
 
-See [`evaluation/evaluation_report.md`](evaluation/evaluation_report.md) Sections 12 and 13 for detailed breakdown and explanations.
+Precision = TP / (TP + FP) = 9 / 55  = 16.36%
+Recall    = TP / (TP + FN) = 9 / 15  = 60.00%
+F1        = 2×TP / (2×TP + FP + FN)  = 18 / 70 = 25.71%
+```
 
----
+### Final / Human-Validated Metrics
 
-### Full Provisional Run (Full 3,428 Unreviewed Candidate Baseline)
+| Metric | Final Value | Reason |
+| :--- | :---: | :--- |
+| **Precision** | **N/A** | No candidates were independently human-reviewed |
+| **Recall** | **N/A** | No candidates were independently human-reviewed |
+| **F1 Score** | **N/A** | No candidates were independently human-reviewed |
+| **Accuracy** | **N/A** | No candidates were independently human-reviewed |
 
-> **⚠️ The metrics in this subsection are computed against the full unreviewed candidate baseline (3,428 annotations, zero human-reviewed). They represent model performance against the original unfiltered candidate set and contain many confirmed false-positive annotations. Treat as indicative only.**
-
-Evaluation results against `ground_truth.json` (3,428 provisional annotations):
-
-#### System-Wide Overall Metrics (Provisional — post-audit run)
-* **Total Ground Truth Entities**: `3,428`
-* **Total Pipeline Predictions**: `5,767`
-* **True Positives (TP)**: `2,984`
-* **False Positives (FP)**: `2,783`
-* **False Negatives (FN)**: `444`
-* **Micro-Precision**: `0.5174` (**51.74%**)
-* **Micro-Recall**: `0.8705` (**87.05%**)
-* **Micro-F1 Score**: `0.6490` (**64.90%**)
-* **Token-Level Accuracy**: `0.9555` (**95.55%** across `69,746` tokens)
-
-#### Category-Wise Benchmark Performance (Provisional)
-
-| Category | Ground Truth | Predictions | TP | FP | FN | Precision | Recall | F1 Score |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **ADDRESS** | `26` | `26` | `26` | `0` | `0` | `1.0000` | `1.0000` | `1.0000` |
-| **CREDIT_CARD** | `0` | `0` | `0` | `0` | `0` | `N/A` | `N/A` | `N/A` |
-| **DOB** | `0` | `0` | `0` | `0` | `0` | `N/A` | `N/A` | `N/A` |
-| **EMAIL** | `70` | `69` | `69` | `0` | `1` | `1.0000` | `0.9857` | `0.9928` |
-| **IP_ADDRESS** | `0` | `0` | `0` | `0` | `0` | `N/A` | `N/A` | `N/A` |
-| **ORGANIZATION** | `2,537` | `4,812` | `2,123` | `2,689` | `414` | `0.4412` | `0.8368` | `0.5778` |
-| **PERSON** | `746` | `811` | `717` | `94` | `29` | `0.8841` | `0.9611` | `0.9210` |
-| **PHONE** | `49` | `49` | `49` | `0` | `0` | `1.0000` | `1.0000` | `1.0000` |
-| **SSN** | `0` | `0` | `0` | `0` | `0` | `N/A` | `N/A` | `N/A` |
-
-> **Why is ORGANIZATION precision low (44.12%)?** The ground truth contains 2,537 ORGANIZATION annotations dominated by generic financial terms (`"EQUITY"` ×80, `"Bids"` ×77, `"Promoter Selling Shareholders"` ×76, `"Company"` ×31, `"Board"` ×28) that are provisional NER outputs, not human-verified confidential entities. The pipeline's 4,812 ORG predictions include many legitimate company names that the provisional ground truth does not annotate. These discrepancies are a known limitation of the unreviewed candidate baseline.
-
-> **Why is PERSON recall 96.11%?** The sub-span containment fix correctly resolves priority conflicts between misclassified generic organizational suffixes and full person names (e.g. `"Hegde"` misclassified as ORGANIZATION overlapping with `"Kushal Subbayya Hegde"` PERSON), dramatically improving the detection of promoter names throughout the document compared to the pre-audit run. Residual false negatives are predominantly unverified generic nouns in the provisional ground truth.
+See [`evaluation/evaluation_report.md`](evaluation/evaluation_report.md) Sections 12 and 13 for the full breakdown, and [`evaluation/review_workflow.md`](evaluation/review_workflow.md) for annotation methodology details.
 
 ---
 
-## False Positives
+## 12. Redaction Validation
 
-Actual false positive vectors identified during evaluation:
-* **Section Titles**: spaCy NER occasionally tags all-caps section titles (e.g. *`"SECTION I - GENERAL"`*, *`"RED HERRING PROSPECTUS"`*) as `ORGANIZATION` or `PERSON`.
-* **Public Regulatory Entities**: Statutory authorities (e.g. *`"SEBI"`*, *`"Registrar of Companies"`*) tagged as `ORGANIZATION`, which human auditors excluded from confidential corporate ground truth.
+After generating the redacted DOCX, a document-wide residual PII validation check was performed using `scripts/residual_pii_checker.py`:
 
----
+| Validation Metric | Result |
+| :--- | :---: |
+| Candidate annotation slots checked | 19 |
+| Successfully replaced | 19 |
+| Residual candidate occurrences | 0 |
+| Actual residual PII | 0 |
+| CareEdge Research residual occurrences | 0 (7 original → 0 remaining) |
 
-## False Negatives
+> **⚠️ Scope Disclaimer**: The "19/19 successfully replaced" result measures redaction replacement efficacy for the currently checked candidate annotation set. This result **must NOT be interpreted as 100% detector recall** or complete PII elimination across the entire document. There may be PII occurrences in the document that were not selected as candidates and therefore not checked.
 
-Actual false negative vectors identified during evaluation:
-* **Condensed Tabular Names**: Individual names inside condensed table cells lacking honorific prefixes (`Mr.`, `Ms.`) are occasionally missed by statistical NER models.
-* **Hyphenated Street Addresses**: Highly justified or hyphenated multi-line street address text blocks.
-
----
-
-## Limitations
-
-1. **Single-Document Scope**: Benchmarking was performed on target prospectus documents.
-2. **spaCy Small Model Constraints**: `en_core_web_sm` is optimized for speed; complex multi-word corporate names may require fine-tuning or larger models (`en_core_web_trf`).
-3. **Zero Ground-Truth Categories**: Categories with 0 ground-truth occurrences (`SSN`, `CREDIT_CARD`, `DOB`, `IP_ADDRESS`) correctly report `N/A` metrics rather than artificial 100% scores.
+See [`evaluation/final_redaction_validation.md`](evaluation/final_redaction_validation.md) for the full validation report.
 
 ---
 
-## Installation
+## 13. Ground Truth Provenance
 
-1. **Clone Repository & Navigate to Folder**:
-   ```bash
-   git clone https://github.com/Perfectionist0001/PII-Redaction-Tool.git
-   cd PII-Redaction-Tool
-   ```
+| Metric | Value |
+| :--- | :---: |
+| Total workload candidates | 3,507 |
+| Automated provisional reviewed | 63 |
+| **Independent human reviewed** | **0** |
+| **Human-reviewed candidates = 0** | (no independent review performed) |
+| Unreviewed candidates | 3,444 |
+| Accepted provisional entities | 15 |
+| Rejected provisional candidates | 48 |
+| Corrected spans | 1 (`cand_59`) |
 
-2. **Create & Activate Virtual Environment**:
-   ```bash
-   python -m venv .venv
-   # On Windows (PowerShell):
-   .\.venv\Scripts\Activate.ps1
-   # On Linux/macOS:
-   source .venv/bin/activate
-   ```
+> **Provenance Classification: PROVISIONAL AUTOMATED ANNOTATION BENCHMARK**
 
-3. **Install Dependencies & spaCy Language Model**:
-   ```bash
-   pip install -r requirements.txt
-   python -m spacy download en_core_web_sm
-   ```
+> **⚠️ Important**: Zero (0) candidates were independently reviewed by a human auditor. All 63 reviewed decisions were generated programmatically via automated policy simulation. This annotation set **must not** be described as human-verified, human-audited, or gold-standard ground truth.
+
+See [`docs/GROUND_TRUTH_PROVENANCE.md`](docs/GROUND_TRUTH_PROVENANCE.md) and [`docs/GROUND_TRUTH_GUIDE.md`](docs/GROUND_TRUTH_GUIDE.md) for full provenance documentation.
 
 ---
 
-## Usage
+## 14. Limitations
 
-### Run End-to-End Redaction Pipeline
+1. **Provisional Ground Truth**: The annotation benchmark was generated via automated policy rules; no candidates were independently reviewed by a human annotator. Final human-validated precision, recall, F1, and accuracy are unavailable.
+
+2. **Partial Workload Assessment**: Only 63 of 3,507 candidate annotations (1.8%) have been reviewed; 3,444 remain unassessed.
+
+3. **spaCy Small Model Constraints**: `en_core_web_sm` is a small, speed-optimized model. Dense table cells, hyphenated multi-word legal corporate names, and context-lacking text snippets may produce false positives or false negatives.
+
+4. **False Positives**: The `ORGANIZATION` detector can tag regulatory authority names (`SEBI`, `Registrar of Companies`), all-caps section headings, and generic financial terms as organizational entities when they appear in document headers or standalone cells.
+
+5. **False Negatives**: Names lacking honorific prefixes (`Mr.`, `Ms.`, `Dr.`) in condensed table cells may be missed by statistical NER. Highly formatted or hyphenated multi-line addresses may not score above the address detection threshold.
+
+6. **Single-Document Scope**: Benchmarking was performed on a single Indian corporate financial prospectus. Performance on other document types (legal agreements, HR records, medical notes, etc.) has not been evaluated.
+
+7. **Excluded Source Files**: The original source prospectus document and raw annotation datasets are intentionally excluded from the public repository to protect sensitive personal data and prevent exposure of real PII strings.
+
+---
+
+## 15. Privacy and Security
+
+To maintain the privacy guarantees of this tool and to avoid exposing sensitive data publicly:
+
+- **Do not commit** real DOCX documents containing actual personal data to this repository or any public fork.
+- **Do not commit** raw PII annotation datasets, ground truth JSON files, or candidate annotation files to public repositories.
+- **Do not commit** `.env` files, API keys, credentials, private keys (`.pem`, `.key`, `.p12`, `.pfx`), or authentication tokens.
+- **Use only synthetic/fake data** when running public demonstrations or adding test fixtures to the `tests/` directory.
+
+The `.gitignore` in this repository is pre-configured to exclude:
+- `input/` (original source documents)
+- `evaluation/ground_truth.json`, `evaluation/ground_truth_verified.json`
+- `evaluation/candidate_annotations.json`, `evaluation/candidate_annotations.md`
+- `.env`, `*.pem`, `*.key`, `*.p12`, `*.pfx`
+
+---
+
+## 16. Troubleshooting
+
+### `python src/main.py` fails with `ModuleNotFoundError`
+
+**Symptom:**
+```
+ModuleNotFoundError: No module named 'src'
+```
+
+**Cause**: Running `python src/main.py` directly does not place the `src` package on the Python path.
+
+**Fix**: Always use module syntax from the project root:
 ```bash
-python -m src.main \
-  --input path/to/input_document.docx \
-  --output output/redacted_document.docx
-```
-
-### Run End-to-End Redaction Pipeline with Evaluation
-```bash
-python -m src.main \
-  --input path/to/input_document.docx \
-  --output output/redacted_document.docx \
-  --evaluate \
-  --ground-truth path/to/ground_truth.json \
-  --report evaluation/evaluation_report.md \
-  --verbose
+python -m src.main --input path/to/your.docx --output output/redacted.docx
 ```
 
 ---
 
-## Testing
+### Input file not found
 
-Run the full pytest suite:
-```bash
-pytest -q
+**Symptom:**
+```
+ERROR: Input file does not exist at .../input/Red Herring Prospectus.docx
 ```
 
-Run regression & negative edge case tests specifically:
+**Cause**: The default `--input` path points to the original prospectus file which is excluded from the public repository.
+
+**Fix**: Supply your own DOCX explicitly:
 ```bash
-pytest tests/test_regressions.py tests/test_regression_correctness.py
+python -m src.main --input path/to/your_document.docx --output output/redacted.docx
 ```
 
 ---
 
-## Project Structure
+### spaCy model not found
 
-```text
-PII-Redaction-Tool/
-├── docs/
-│   ├── BASELINE_AUDIT.md            # Baseline evaluation audit
-│   ├── CAREEDGE_LEAK_ROOT_CAUSE.md  # Post-mortem & fix report for CareEdge Research bug
-│   ├── CORRECTNESS_AUDIT.md         # Quality control audit report
-│   ├── FINAL_AUDIT.md               # Final submission audit notes
-│   ├── FINAL_CONSISTENCY_CHECK.md   # Cross-document consistency verification
-│   ├── FINAL_SUBMISSION_AUDIT.md    # Pre-packaging submission audit report
-│   ├── GITHUB_PUBLICATION_AUDIT.md  # GitHub publication security & path audit
-│   ├── GITHUB_STAGING_STATUS.md     # Git staging & .gitignore verification status
-│   ├── GROUND_TRUTH_GUIDE.md        # Human annotation rules & policy guide
-│   ├── GROUND_TRUTH_PROVENANCE.md   # Provenance & review method disclosure
-│   └── PROJECT_ANALYSIS.md          # Technical analysis of OpenXML prospectus
-├── evaluation/
-│   ├── evaluation_report.md         # Final evaluation metrics report
-│   ├── final_redaction_validation.json # JSON structured residual PII results
-│   ├── final_redaction_validation.md # Residual PII validation output report
-│   ├── review_annotations.py        # Ground truth review utility CLI
-│   └── review_workflow.md           # Ground truth methodology documentation
-├── output/
-│   └── redacted_prospectus.docx     # Generated redacted output file (synthetic data)
-├── scripts/
-│   ├── extract_doc_stats.py         # OpenXML prospectus statistic extraction utility
-│   └── residual_pii_checker.py      # Residual PII validation script
-├── src/
-│   ├── detectors/                   # 8 specialized PII detectors
-│   ├── evaluation/                  # Evaluation engine & metrics
-│   ├── extractors/                  # DOCX paragraph & table extractor
-│   ├── redaction/                   # Pseudonymizer & DOCX redactor
-│   ├── validation/                  # Redaction validation utilities
-│   ├── config.py                    # Project configuration settings
-│   ├── detection_pipeline.py        # Detection pipeline & overlap resolution
-│   ├── main.py                      # CLI entrypoint orchestrator
-│   └── models.py                    # Core PIIEntity & TextChunk models
-├── tests/                           # Unit and regression test cases (83 tests)
-├── .gitignore                       # Git ignore configuration
-├── pytest.ini                       # Pytest configuration
-├── README.md                        # Project documentation
-└── requirements.txt                 # Project dependencies
+**Symptom:**
+```
+OSError: [E050] Can't find model 'en_core_web_sm'
+```
+
+**Cause**: Dependencies were not fully installed.
+
+**Fix**: Re-run the full dependency installation (the model wheel is included in `requirements.txt`):
+```bash
+pip install -r requirements.txt
+```
+
+Do **not** run `python -m spacy download en_core_web_sm` separately — it is not required when using `requirements.txt`, and may install a different model version than the pinned `3.7.1` wheel.
+
+---
+
+### PowerShell execution policy blocks `.ps1` scripts
+
+**Symptom:**
+```
+.\.venv\Scripts\Activate.ps1 cannot be loaded because running scripts is disabled on this system.
+```
+
+**Fix** (run once, current user only):
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 ```
 
 ---
 
-## Future Improvements
+### Ground truth file not found during `--evaluate`
 
-1. **Transformer NER Models**: Integrate Transformer-based spaCy models (`en_core_web_trf`) or local HuggingFace BERT NER models for higher precision on multi-word legal names.
-2. **Indian Tax Identification Detectors**: Add specialized detectors for Indian Permanent Account Numbers (PAN e.g., `ABCDE1234F`) and Aadhaar numbers.
-3. **Interactive UI**: Develop a local web interface (using Streamlit or Vite/FastAPI) allowing reviewers to visually highlight, audit, and approve redaction spans prior to document output generation.
+**Symptom:**
+```
+ERROR: Ground truth file not found at .../evaluation/ground_truth.json
+```
+
+**Cause**: Raw annotation files are excluded from the public repository. The `--evaluate` flag requires a ground truth JSON file that you must supply.
+
+**Fix**: Either omit `--evaluate` for a standard redaction run, or provide a valid ground truth JSON:
+```bash
+python -m src.main --input input/sample.docx --output output/redacted.docx --evaluate --ground-truth path/to/your_ground_truth.json
+```
