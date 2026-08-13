@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Test/cache
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local environment/secrets
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Temporary files & logs
+scratch/
+*.tmp
+*.log
+
+# Local submission packaging
+submission/
+PII_Redaction_Tool_Final_Submission.zip
+
+# Local build/helper scripts
+build_submission.ps1
+verify_submission.ps1
+create_zip.ps1
+
+# Original sensitive prospectus
+input/
+Red Herring Prospectus.docx
+
+# Raw/proprietary evaluation annotation data
+evaluation/ground_truth.json
+evaluation/ground_truth_verified.json
+evaluation/candidate_annotations.json
+evaluation/candidate_annotations.md
+evaluation/review_summary.md

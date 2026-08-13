@@ -1,0 +1,191 @@
+{
+  "meta": {
+    "original": "input\\Red Herring Prospectus.docx",
+    "redacted": "output\\redacted_prospectus.docx",
+    "ground_truth_source": "evaluation\\ground_truth_verified.json"
+  },
+  "summary": {
+    "total_candidate_pii_occurrences_checked": 19,
+    "successfully_replaced_occurrences": 19,
+    "residual_candidate_occurrences": 0,
+    "actual_residual_pii": 0,
+    "provisional_false_positives": 0,
+    "conclusion": "PASS — NO ACTUAL RESIDUAL PII FOUND"
+  },
+  "category_stats": {
+    "PERSON": {
+      "checked": 1,
+      "replaced": 1,
+      "residual": 0
+    },
+    "EMAIL": {
+      "checked": 1,
+      "replaced": 1,
+      "residual": 0
+    },
+    "PHONE": {
+      "checked": 1,
+      "replaced": 1,
+      "residual": 0
+    },
+    "ORGANIZATION": {
+      "checked": 13,
+      "replaced": 13,
+      "residual": 0
+    },
+    "ADDRESS": {
+      "checked": 3,
+      "replaced": 3,
+      "residual": 0
+    },
+    "SSN": {
+      "checked": 0,
+      "replaced": 0,
+      "residual": 0
+    },
+    "CREDIT_CARD": {
+      "checked": 0,
+      "replaced": 0,
+      "residual": 0
+    },
+    "DOB": {
+      "checked": 0,
+      "replaced": 0,
+      "residual": 0
+    },
+    "IP_ADDRESS": {
+      "checked": 0,
+      "replaced": 0,
+      "residual": 0
+    }
+  },
+  "residuals": [],
+  "repeated_entity_checks": [
+    {
+      "label": "ORGANIZATION (explicit)",
+      "text": "CareEdge Research",
+      "orig_count": 7,
+      "red_count": 0,
+      "replaced": 7,
+      "residual": 0,
+      "status": "✅ OK"
+    },
+    {
+      "label": "PERSON",
+      "text": "Sarthak Malvadkar",
+      "orig_count": 7,
+      "red_count": 0,
+      "replaced": 7,
+      "residual": 0,
+      "status": "✅ OK"
+    },
+    {
+      "label": "ORGANIZATION",
+      "text": "KSH INTERNATIONAL LIMITED",
+      "orig_count": 10,
+      "red_count": 0,
+      "replaced": 10,
+      "residual": 0,
+      "status": "✅ OK"
+    },
+    {
+      "label": "ORGANIZATION",
+      "text": "Bhandary Metal Extrusion Private Limited",
+      "orig_count": 3,
+      "red_count": 0,
+      "replaced": 3,
+      "residual": 0,
+      "status": "✅ OK"
+    },
+    {
+      "label": "ORGANIZATION",
+      "text": "KSH International Private Limited",
+      "orig_count": 3,
+      "red_count": 0,
+      "replaced": 3,
+      "residual": 0,
+      "status": "✅ OK"
+    },
+    {
+      "label": "ORGANIZATION",
+      "text": "Registrar of Companies Maharashtra",
+      "orig_count": 1,
+      "red_count": 0,
+      "replaced": 1,
+      "residual": 0,
+      "status": "✅ OK"
+    },
+    {
+      "label": "ORGANIZATION",
+      "text": "KSH International Limited",
+      "orig_count": 5,
+      "red_count": 0,
+      "replaced": 5,
+      "residual": 0,
+      "status": "✅ OK"
+    },
+    {
+      "label": "ORGANIZATION",
+      "text": "CARE Analytics and Advisory Private Limited",
+      "orig_count": 4,
+      "red_count": 0,
+      "replaced": 4,
+      "residual": 0,
+      "status": "✅ OK"
+    },
+    {
+      "label": "ORGANIZATION",
+      "text": "CareEdge Research",
+      "orig_count": 7,
+      "red_count": 0,
+      "replaced": 7,
+      "residual": 0,
+      "status": "✅ OK"
+    },
+    {
+      "label": "ADDRESS",
+      "text": "11/3, 11/4 and 11/5, Village Birdewadi, Chakan Taluka - Khed, Pune – 410 501, Maharashtra, India;",
+      "orig_count": 1,
+      "red_count": 0,
+      "replaced": 1,
+      "residual": 0,
+      "status": "✅ OK"
+    },
+    {
+      "label": "ADDRESS",
+      "text": "201, Tower 2, Montreal Business Centre, Off Pallod Farms, Baner, Pune – 411 045, Maharashtra, India;",
+      "orig_count": 1,
+      "red_count": 0,
+      "replaced": 1,
+      "residual": 0,
+      "status": "✅ OK"
+    },
+    {
+      "label": "ADDRESS",
+      "text": "at 11/3, 11/4 and 11/5, Village Birdewadi, Chakan Taluka - Khed, Pune – 410 501, Maharashtra, India and its Corporate Office at 201, Tower 2, Montreal Business Centre, Off Pallod Farms, Baner, Pune – 411 045, Maharashtra, India.",
+      "orig_count": 1,
+      "red_count": 0,
+      "replaced": 1,
+      "residual": 0,
+      "status": "✅ OK"
+    },
+    {
+      "label": "EMAIL",
+      "text": "cs.connect@kshinternational.com",
+      "orig_count": 3,
+      "red_count": 0,
+      "replaced": 3,
+      "residual": 0,
+      "status": "✅ OK"
+    },
+    {
+      "label": "PHONE",
+      "text": "+ 91 20 4505 3237",
+      "orig_count": 1,
+      "red_count": 0,
+      "replaced": 1,
+      "residual": 0,
+      "status": "✅ OK"
+    }
+  ]
+}
