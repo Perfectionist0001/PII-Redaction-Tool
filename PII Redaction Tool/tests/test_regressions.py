@@ -202,6 +202,78 @@ class TestRegressionsAndNegatives(unittest.TestCase):
             self.assertEqual(e.source_location.paragraph_index, 0)
             self.assertEqual(e.source_location.source_type, SourceType.PARAGRAPH)
 
+    def test_rakhi_girija_shetty_case_variation_propagation(self) -> None:
+        """Verify that a PERSON entity detected in Title Case propagates to ALL-CAPS occurrences across chunks."""
+        from src.detectors.base import BaseDetector
+        from src.detection_pipeline import DetectionPipeline
+        from typing import List
+
+        chunk1 = TextChunk(
+            "c1",
+            "Individual promoter details for Rakhi Girija Shetty.",
+            SourceLocation(source_type=SourceType.PARAGRAPH, paragraph_index=166),
+        )
+        chunk2 = TextChunk(
+            "c2",
+            "OUR PROMOTERS: KUSHAL SUBBAYYA HEGDE, RAKHI GIRIJA SHETTY, DHAULAGIRI FAMILY TRUST",
+            SourceLocation(
+                source_type=SourceType.TABLE_CELL,
+                table_index=0,
+                row_index=2,
+                cell_index=0,
+                paragraph_index=0,
+            ),
+        )
+
+        class MockNERDetector(BaseDetector):
+            @property
+            def detector_name(self) -> str:
+                return "MockNER"
+
+            @property
+            def supported_entity_types(self) -> List[str]:
+                return ["PERSON"]
+
+            def detect(self, chunk: TextChunk) -> List[PIIEntity]:
+                # Only detects in chunk1 (Title Case), misses chunk2 (ALL CAPS in table cell)
+                if chunk.chunk_id == "c1":
+                    return [
+                        PIIEntity(
+                            entity_type="PERSON",
+                            original_text="Rakhi Girija Shetty",
+                            start=32,
+                            end=51,
+                            confidence=0.85,
+                            detector="MockNER",
+                            source_location=chunk.source_location,
+                        )
+                    ]
+                return []
+
+        pipeline = DetectionPipeline()
+        pipeline.register_detector(MockNERDetector())
+
+        entities = pipeline.process_chunks([chunk1, chunk2])
+
+        # Verify that both chunks have the entity detected
+        self.assertEqual(len(entities), 2)
+
+        # First chunk entity
+        e1 = [e for e in entities if e.source_location.paragraph_index == 166][0]
+        self.assertEqual(e1.original_text, "Rakhi Girija Shetty")
+        self.assertEqual(e1.start, 32)
+        self.assertEqual(e1.end, 51)
+        self.assertEqual(e1.entity_type, "PERSON")
+
+        # Second chunk entity (propagated to ALL-CAPS table cell)
+        e2 = [e for e in entities if e.source_location.source_type == SourceType.TABLE_CELL][0]
+        self.assertEqual(e2.original_text, "RAKHI GIRIJA SHETTY")
+        self.assertEqual(e2.start, 38)
+        self.assertEqual(e2.end, 57)
+        self.assertEqual(e2.entity_type, "PERSON")
+        self.assertIn("propagated", e2.detector)
+
 
 if __name__ == "__main__":
     unittest.main()
+

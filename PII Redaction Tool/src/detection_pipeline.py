@@ -238,7 +238,8 @@ class DetectionPipeline:
             all_initial_entities.extend(resolved_chunk_ents)
 
         # Pass 2: Build known high-confidence entity set for document-wide co-reference propagation
-        known_entity_map: Dict[str, Tuple[str, float, str]] = {}
+        # Keyed by lowercase string to eliminate case-variation duplicates and enable case-insensitive propagation
+        known_entity_map: Dict[str, Tuple[str, str, float, str, re.Pattern]] = {}
         for e in all_initial_entities:
             clean_text = e.original_text.strip()
             # Propagate multi-word PERSON/ORGANIZATION names and distinct PII strings
@@ -250,27 +251,28 @@ class DetectionPipeline:
                 # Require at least 2 words for person names to prevent single-word false positive propagation
                 if e.entity_type == "PERSON" and len(clean_text.split()) < 2:
                     continue
-                if clean_text not in known_entity_map:
-                    known_entity_map[clean_text] = (e.entity_type, e.confidence, e.detector)
+                norm_key = clean_text.lower()
+                if norm_key not in known_entity_map:
+                    # Pre-compile word-boundary pattern with re.IGNORECASE
+                    pattern = re.compile(rf"(?<!\w){re.escape(clean_text)}(?!\w)", re.IGNORECASE)
+                    known_entity_map[norm_key] = (clean_text, e.entity_type, e.confidence, e.detector, pattern)
 
-        # Pass 3: Propagate known entities to chunks missing them
+        # Pass 3: Propagate known entities to chunks missing them (case-insensitive with fast substring pre-filter)
         final_entities: List[PIIEntity] = []
         for chunk in chunks:
             chunk_ents = list(chunk_detections.get(chunk.chunk_id, []))
-            
-            # Keep track of spans already covered by exact match
             existing_spans = {(e.start, e.end) for e in chunk_ents}
+            chunk_lower = chunk.text.lower()
 
-            for entity_text, (etype, conf, det) in known_entity_map.items():
-                if entity_text in chunk.text:
-                    pattern = re.escape(entity_text)
-                    for m in re.finditer(pattern, chunk.text):
+            for norm_key, (clean_text, etype, conf, det, pattern) in known_entity_map.items():
+                if norm_key in chunk_lower:
+                    for m in pattern.finditer(chunk.text):
                         start, end = m.start(), m.end()
-                        # Check if this exact span is already in chunk_ents
                         if (start, end) not in existing_spans:
+                            matched_text = chunk.text[start:end]
                             propagated_ent = PIIEntity(
                                 entity_type=etype,
-                                original_text=entity_text,
+                                original_text=matched_text,
                                 start=start,
                                 end=end,
                                 confidence=conf,

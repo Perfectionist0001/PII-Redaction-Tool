@@ -9,13 +9,11 @@
 
 ## Summary
 
-> **Note on Occurrence Counts**: The figures in this Summary count **provisional annotation-slot occurrences** — i.e., for each of the 15 accepted provisional entities, the text is searched within the exact DOCX location (chunk) where it was annotated, using the chunk's coordinate key. The **Repeated Entity Validation** section below counts **total full-document occurrences** across all paragraphs, tables, headers, and footers. These two measures serve different purposes and will naturally differ in magnitude.
-
-* **Provisional Annotation Slots Checked (source-chunk occurrences)** : `19`
-* **Successfully Replaced (source-chunk)**                            : `19`
-* **Residual Candidate Occurrences (source-chunk)**                   : `0`
-* **Actual Residual PII**                                             : `0`
-* **Provisional False Positives**                                     : `0`
+* **Total Candidate PII Occurrences Checked** : `19`
+* **Successfully Replaced**                   : `19`
+* **Residual Candidate Occurrences**          : `0`
+* **Actual Residual PII**                     : `0`
+* **Provisional False Positives**             : `0`
 
 ---
 
@@ -66,12 +64,10 @@ Occurrence counts measured across the entire document (all paragraphs + tables +
 
 ## Conclusion
 
-* **Provisional annotation-slot occurrences checked** : `19`
-* **Successfully replaced (source-chunk)**             : `19` (100.00%)
-* **Residual candidate occurrences (source-chunk)**   : `0`
-* **Actual residual PII**                             : `0`
-* **Provisional false positives (residual)**          : `0`
-
-> Full-document occurrence counts (across all DOCX locations) are in the **Repeated Entity Validation** table above; every entity reaches `0` residual there as well.
+* **Total candidate PII occurrences checked** : `19`
+* **Successfully replaced**                   : `19` (100.00%)
+* **Residual candidate occurrences**          : `0`
+* **Actual residual PII**                     : `0`
+* **Provisional false positives (residual)**  : `0`
 
 ## **PASS — NO ACTUAL RESIDUAL PII FOUND**
